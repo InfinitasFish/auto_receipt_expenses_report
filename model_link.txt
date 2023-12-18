@@ -1,3 +1,0 @@
-Google drive link to the current model checkpoint (can't upload big files to github) in hugging face from_pretrained interface:
-
-https://drive.google.com/drive/folders/1kW3PfXKFWAXk_tWk49Ae0d5hQ6rHRAej?usp=sharing
