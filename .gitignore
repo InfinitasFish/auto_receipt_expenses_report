@@ -1,0 +1,14 @@
+layoutXLM_checkpoint/
+layoutXLM_checkpoint/**
+
+yolov8-obb_checkpoint/
+yolov8-obb_checkpoint/**
+
+docs/
+docs/**
+
+.idea/
+.idea/**
+
+__pycache__/
+__pycache__/**

@@ -5,6 +5,7 @@ from PIL import Image
 
 
 def separate_images(np_image, ocr_engine):
+    # TODO: To delete this func?
 
     bounds = ocr_engine.readtext(np_image)
     pil_image = Image.fromarray(np_image)
@@ -85,70 +86,155 @@ def separate_images(np_image, ocr_engine):
 
 def parse_extracted_data(extracted_data):
     # extracted_data is list of ( ()-TOKEN, WORD ) tuples
-    address_total = ''
-    total_total = ''
-    date_total = ''
-    company_total = ''
-    total = ''
-    date = ''
-    company = ''
-    address = ''
 
+    # collect all sequences
+    seqs_dict = {'address_seqs': [], 'company_seqs': [], 'date_seqs': [], 'total_seqs': []}
+
+    curr_address = []
+    curr_company = []
+    curr_date = []
+    curr_total = []
+
+    # ugly
     for i in range(len(extracted_data)):
+        # check for entity name
         if 'ADDRESS' in extracted_data[i][0]:
-            if 'B' in extracted_data[i][0]:
-                address = extracted_data[i][1]
-            if 'I' in extracted_data[i][0]:
-                address = address + ' ' + extracted_data[i][1]
-        if 'DATE' in extracted_data[i][0]:
-            if 'B' in extracted_data[i][0]:
-                date = extracted_data[i][1]
-            if 'I' in extracted_data[i][0]:
-                date = date + ' ' + extracted_data[i][1]
-        if 'COMPANY' in extracted_data[i][0]:
-            if 'B' in extracted_data[i][0]:
-                company = extracted_data[i][1]
-            if 'I' in extracted_data[i][0]:
-                company = company + ' ' + extracted_data[i][1]
-        if 'TOTAL' in extracted_data[i][0]:
-            if 'B' in extracted_data[i][0]:
-                total = extracted_data[i][1]
-            if 'I' in extracted_data[i][0]:
-                total = total + ' ' + extracted_data[i][1]
+            # different cases for I-B-I-I, B-I-I, I-I-I, B-I-B-I-I
+            if 'B' in extracted_data[i][0] and curr_address == []:
+                curr_address = [extracted_data[i][1]]
+            elif 'B' in extracted_data[i][0] and curr_address != []:
+                seqs_dict['address_seqs'].append(curr_address)
+                curr_address = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_address == []:
+                curr_address = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_address != []:
+                curr_address.append(extracted_data[i][1])
 
-        # choosing the longest output token
-        if len(total) > len(total_total):
-            total_total = total
-        if len(date) > len(date_total):
-            date_total = date
-        if len(company) > len(company_total):
-            company_total = company
-        if len(address) > len(address_total):
-            address_total = address
+        elif 'COMPANY' in extracted_data[i][0]:
+            if 'B' in extracted_data[i][0] and curr_company == []:
+                curr_company = [extracted_data[i][1]]
+            elif 'B' in extracted_data[i][0] and curr_company != []:
+                seqs_dict['company_seqs'].append(curr_company)
+                curr_company = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_company == []:
+                curr_company = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_company != []:
+                curr_company.append(extracted_data[i][1])
 
-    # naming god
-    address_total_date_company = []
-    address_total_date_company.append(address_total)
-    address_total_date_company.append(total_total)
-    address_total_date_company.append(date_total)
-    address_total_date_company.append(company_total)
+        elif 'DATE' in extracted_data[i][0]:
+            if 'B' in extracted_data[i][0] and curr_date == []:
+                curr_date = [extracted_data[i][1]]
+            elif 'B' in extracted_data[i][0] and curr_date != []:
+                seqs_dict['date_seqs'].append(curr_date)
+                curr_date = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_date == []:
+                curr_date = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_date != []:
+                curr_date.append(extracted_data[i][1])
 
-    return address_total_date_company
+        elif 'TOTAL' in extracted_data[i][0]:
+            if 'B' in extracted_data[i][0] and curr_total == []:
+                curr_total = [extracted_data[i][1]]
+            elif 'B' in extracted_data[i][0] and curr_total != []:
+                seqs_dict['total_seqs'].append(curr_total)
+                curr_total = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_total == []:
+                curr_total = [extracted_data[i][1]]
+            elif 'I' in extracted_data[i][0] and curr_total != []:
+                curr_total.append(extracted_data[i][1])
 
 
-def fill_exel_report(extracted_data, report_filename='exel_report.xlsx'):
+    # append last sequence
+    seqs_dict['address_seqs'].append(curr_address)
+    seqs_dict['company_seqs'].append(curr_company)
+    seqs_dict['date_seqs'].append(curr_date)
+    seqs_dict['total_seqs'].append(curr_total)
+
+    # select longest sequence by characters for each entity
+    entities_dict = {'address': max([' '.join(seqs) for seqs in seqs_dict['address_seqs']], key=len),
+                     'company': max([' '.join(seqs) for seqs in seqs_dict['company_seqs']], key=len),
+                     'date': max([' '.join(seqs) for seqs in seqs_dict['date_seqs']], key=len),
+                     'total': max([' '.join(seqs) for seqs in seqs_dict['total_seqs']], key=len)}
+
+    print(seqs_dict['total_seqs'])
+
+    return entities_dict
+
+
+def fill_exel_report(extracted_data_list, report_filename='exel_report.xlsx'):
+    # extracted data list contains data for every receipt on the image
     book = openpyxl.open(report_filename, read_only=False)
     sheet = book.worksheets[0]
 
-    for extr_data in extracted_data:
-        data = parse_extracted_data(extr_data)
+    # list for storing number of table rows of receipts
+    table_numbers = []
 
-        for i in range(100):
+    # 68 is a magic number
+    for i, row in enumerate(sheet):
+        if number := sheet['B' + str(68 + i)].value:
+            table_numbers.append(number)
+        else:
+            break
+
+    table_number_border = max(table_numbers)
+
+    # row 82-86 is subscription structure (should copy it)
+
+
+    for data in extracted_data_list:
+        entities_dict = parse_extracted_data(data)
+
+        # TODO: STOPPED HERE HELLLOOOOO
+        filled_row = False
+        for i in range(table_number_border):
             if sheet['D' + str(68 + i)].value == None:
-                sheet['D' + str(68 + i)] = data[2]
-                sheet['H' + str(68 + i)] = data[3]
-                sheet['L' + str(68 + i)] = data[1]
+                sheet['D' + str(68 + i)] = entities_dict['date']
+                sheet['H' + str(68 + i)] = entities_dict['company']
+                sheet['L' + str(68 + i)] = entities_dict['total']
+                # TODO: в будущем научиться детектить и заполнять номер чека
+                filled_row = True
                 break
+        if not filled_row:
+            pass
+            # TODO: should extend table and also lower subscription structure
 
-    book.save(report_filename)
-    book.close()
+    # book.save(report_filename)
+    # book.close()
+
+
+if __name__ == '__main__':
+
+    nerv = [('I-ADDRESS', '<s>'),
+            ('B-ADDRESS', '115114'),
+            ('I-ADDRESS', 'Mockba'),
+            ('I-ADDRESS', 'Площадь'),
+            ('I-ADDRESS', 'Павелечкого'),
+            ('I-ADDRESS', 'вокзала'),
+            ('I-ADDRESS', ''),
+            ('I-ADDRESS', ','),
+            ('I-ADDRESS', 'la'),
+            ('B-ADDRESS', '115114,'),
+            ('I-ADDRESS', 'r.Mockba,'),
+            ('I-ADDRESS', 'nл.Павеле'),
+            ('I-ADDRESS', 'ECC'),
+            ('I-ADDRESS', ''),
+            ('I-ADDRESS', '4A,'),
+            ('B-DATE', ':31.10.2023'),
+            ('I-ADDRESS', 'Aомодейово'),
+            ('I-ADDRESS', '189'),
+            ('I-ADDRESS', 'Павелeчkий'),
+            ('B-DATE', '31.10.23'),
+            ('B-TOTAL', ''),
+            ('B-TOTAL', '=500.00'),
+            ('B-TOTAL', '=3000.00'),
+            ('I-COMPANY', 'OOO'),
+            ('I-COMPANY', 'Слава'),
+            ('I-COMPANY', 'Инфик'),
+            ('B-COMPANY', 'Мышь')]
+
+    result = parse_extracted_data(nerv)
+    for k, v in result.items():
+        print(f'{k}:{v}')
+
+    fill_exel_report([result])
+

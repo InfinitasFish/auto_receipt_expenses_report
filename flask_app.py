@@ -6,7 +6,8 @@ from flask_uploads import UploadSet, DOCUMENTS, IMAGES, configure_uploads
 from flask_wtf import FlaskForm
 from flask_wtf.file import FileField, FileAllowed, FileRequired
 from wtforms import SubmitField
-from LayoutXlm_extraction import initialize_model, initialize_processor, initialize_detector, whole_pipeline
+from LayoutXlm_extraction import initialize_layout_model, initialize_layout_processor, initialize_easyocr_detector, whole_pipeline
+from yolo_pipeline import initialize_yolo
 
 app = Flask(__name__)
 app.config['UPLOADED_DOCUMENTS_DEST'] = 'docs'
@@ -16,7 +17,8 @@ documents = UploadSet('documents', DOCUMENTS+IMAGES)
 configure_uploads(app, documents)
 
 # crutch
-model, processor = None, None
+layout_model, yolo_model, layout_processor = None, None, None
+
 
 class UploadForm(FlaskForm):
     doc = FileField(
@@ -45,7 +47,7 @@ def upload_file():
             file_url = url_for('get_file', filename=filename)
 
             # receipt data extraction
-            results = whole_pipeline(model, processor, ocr_engine, filename)
+            results = whole_pipeline(layout_model, layout_processor, ocr_engine, yolo_model, filename)
             # parsing annotated images to base64 for html
             for res in results:
                 res['annotated_image'] = convert_pil_to_base64(res['annotated_image'])
@@ -61,9 +63,10 @@ def convert_pil_to_base64(pil_image):
 
 
 if __name__ == '__main__':
-    model = initialize_model()
-    processor = initialize_processor()
-    ocr_engine = initialize_detector()
+    layout_model = initialize_layout_model()
+    yolo_model = initialize_yolo('yolov8-obb_checkpoint/best_nano.pt')
+    layout_processor = initialize_layout_processor()
+    ocr_engine = initialize_easyocr_detector()
     print('Model and Processor are initialized')
 
     app.run(debug=True)

@@ -4,9 +4,10 @@ import torch
 from PIL import Image, ImageDraw
 from transformers import LayoutLMv2ForTokenClassification
 from transformers import LayoutXLMProcessor
+from yolo_pipeline import yolo_pipeline
 import cv2
 from pdf2image import convert_from_path
-from additional_utils import separate_images, fill_exel_report
+from additional_utils import fill_exel_report
 import easyocr
 import math
 
@@ -14,35 +15,36 @@ import math
 label_list = ['O', 'B-COMPANY', 'I-COMPANY', 'B-DATE', 'I-DATE', 'B-ADDRESS', 'I-ADDRESS', 'B-TOTAL', 'I-TOTAL']
 id2label = {v: k for v, k in enumerate(label_list)}
 label2id = {k: v for v, k in enumerate(label_list)}
-label2color = {'O':'gray', 'B-COMPANY':'red', 'I-COMPANY':'red', 'B-ADDRESS': 'orange',
-               'I-ADDRESS': 'orange', 'B-DATE':'violet', 'I-DATE':'violet', 'B-TOTAL':'green', 'I-TOTAL':'green'}
+label2color = {'O': 'gray', 'B-COMPANY': 'red', 'I-COMPANY': 'red', 'B-ADDRESS': 'orange',
+               'I-ADDRESS': 'orange', 'B-DATE': 'violet', 'I-DATE': 'violet', 'B-TOTAL': 'green', 'I-TOTAL': 'green'}
 
 
-def whole_pipeline(model, processor, ocr_engine, filename):
+def whole_pipeline(layout_model, processor, ocr_engine, yolo_model, filename):
     # checking for multiple receipts on image
     start_np_image = convert_image_to_numpy(filename)
-    separated_images = separate_images(start_np_image, ocr_engine)
+    separated_images = yolo_pipeline(yolo_model, start_np_image)
 
     # applying pipeline for each image
     results = [] # dictionaries with all data
     extracted_data_results = [] # separate list for filling exel report
-    for pil_image in separated_images[0]:
-        predictions, predicted_boxes, extracted_data = forward_pass(model, processor, ocr_engine, pil_image)
-        extracted_data_results.append(extracted_data)
-        annotated_image = get_annotated_image(pil_image, predictions, predicted_boxes)
-        qr_code_data = qr_code_data_extraction(pil_image)
-        combined_extracted_data = combine_informative_tokens(extracted_data)
+    for np_image in separated_images:
+        predictions, predicted_boxes, extracted_data = layout_forward_pass(layout_model, processor, ocr_engine, np_image)
+        if predictions is not None:
+            extracted_data_results.append(extracted_data)
+            annotated_image = get_annotated_image(np_image, predictions, predicted_boxes)
+            qr_code_data = qr_code_data_extraction(np_image)
+            combined_extracted_data = combine_informative_tokens(extracted_data)
 
-        results.append({'combined_extracted_data': combined_extracted_data,
-                        'annotated_image': annotated_image,
-                        'qr_code_data': qr_code_data})
+            results.append({'combined_extracted_data': combined_extracted_data,
+                            'annotated_image': annotated_image,
+                            'qr_code_data': qr_code_data})
 
     fill_exel_report(extracted_data_results)
 
     return results
 
 
-def initialize_model():
+def initialize_layout_model():
     model = LayoutLMv2ForTokenClassification.from_pretrained("./layoutXLM_checkpoint",
                                                              id2label=id2label,
                                                              label2id=label2id,
@@ -51,22 +53,20 @@ def initialize_model():
     return model
 
 
-def initialize_processor():
-    processor = LayoutXLMProcessor.from_pretrained("microsoft/layoutxlm-base", apply_ocr=False)
+def initialize_layout_processor():
+    processor = LayoutXLMProcessor.from_pretrained("layoutXLM_checkpoint", apply_ocr=False)
 
     return processor
 
 
-def initialize_detector():
+def initialize_easyocr_detector():
     return easyocr.Reader(['ru'])
 
 
-def forward_pass(model, processor, ocr_engine, pil_image):
+def layout_forward_pass(layout_model, processor, ocr_engine, np_image):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model.to(device)
-
-    np_image = np.asarray(pil_image)
+    layout_model.to(device)
 
     width, height = np_image.shape[1], np_image.shape[0]
 
@@ -75,50 +75,53 @@ def forward_pass(model, processor, ocr_engine, pil_image):
 
     formatted_results = []
 
-    for result in ocr_results:
-        points = result[0]
+    if len(ocr_results) > 0:
+        for result in ocr_results:
+            points = result[0]
 
-        p0, p2 = points[0], points[2]
-        x0, y0, x2, y2 = p0[0], p0[1], p2[0], p2[1]
+            p0, p2 = points[0], points[2]
+            x0, y0, x2, y2 = max(0, p0[0]), max(0, p0[1]), min(p2[0], width), min(p2[1], height)
 
-        norm_box = normalize_box_1000([x0, y0, x2, y2], height, width)
-        formatted_results.append((norm_box, result[1]))
+            norm_box = normalize_box_1000([x0, y0, x2, y2], height, width)
+            formatted_results.append((norm_box, result[1]))
 
-    words = [res[1] for res in formatted_results]
-    boxes = [res[0] for res in formatted_results]
+        words = [res[1] for res in formatted_results]
+        boxes = [res[0] for res in formatted_results]
 
-    encoding = processor(np_image, text=words, boxes=boxes, truncation=True,
-                         return_offsets_mapping=True, return_tensors="pt",
-                         padding="max_length", max_length=512)
+        encoding = processor(np_image, text=words, boxes=boxes, truncation=True,
+                             return_offsets_mapping=True, return_tensors="pt",
+                             padding="max_length", max_length=512)
 
-    offset_mapping = encoding.pop('offset_mapping')
+        offset_mapping = encoding.pop('offset_mapping')
 
-    for k, v in encoding.items():
-        encoding[k] = v.to(device)
+        for k, v in encoding.items():
+            encoding[k] = v.to(device)
 
-    outputs = model(**encoding)
-    predictions = outputs.logits.argmax(-1).squeeze().tolist()
-    token_boxes = encoding.bbox.squeeze().tolist()
+        outputs = layout_model(**encoding)
+        predictions = outputs.logits.argmax(-1).squeeze().tolist()
+        token_boxes = encoding.bbox.squeeze().tolist()
 
-    is_subword = np.array(offset_mapping.squeeze().tolist())[:, 0] != 0
+        is_subword = np.array(offset_mapping.squeeze().tolist())[:, 0] != 0
 
-    true_predictions = [id2label[pred] for idx, pred in enumerate(predictions) if not is_subword[idx]]
-    true_boxes = [unnormalize_1000_box(box, width, height) for idx, box in enumerate(token_boxes) if not is_subword[idx]]
+        true_predictions = [id2label[pred] for idx, pred in enumerate(predictions) if not is_subword[idx]]
+        true_boxes = [unnormalize_1000_box(box, width, height) for idx, box in enumerate(token_boxes) if not is_subword[idx]]
 
-    extracted_data = get_informative_tokens_text(encoding, offset_mapping, outputs, id2label, processor)
+        extracted_data = get_informative_tokens_text(encoding, offset_mapping, outputs, id2label, processor)
 
-    return true_predictions, true_boxes, extracted_data
+        return true_predictions, true_boxes, extracted_data
+    else:
+        return None, None, None
 
 
-def get_annotated_image(pil_image, predictions, boxes):
+def get_annotated_image(np_image, predictions, boxes):
 
-    pil_image_copy = pil_image.copy()
+    pil_image = Image.fromarray(np_image)
 
-    width, height = pil_image_copy.size
+    width, height = pil_image.size
     box_width = math.ceil(width * height / 10e6)
     font_size = box_width * 10
 
-    image_draw = ImageDraw.Draw(pil_image_copy)
+    image_draw = ImageDraw.Draw(pil_image)
 
     for prediction, box in zip(predictions, boxes):
         predicted_label = iob_to_label(prediction)
@@ -128,7 +131,7 @@ def get_annotated_image(pil_image, predictions, boxes):
         else:
             image_draw.rectangle(box, outline=label2color[predicted_label], width=box_width)
 
-    return pil_image_copy
+    return pil_image
 
 
 def normalize_box_1000(box, height, width):
@@ -203,12 +206,10 @@ def iob_to_label(label):
     return label
 
 
-def qr_code_data_extraction(pil_image):
+def qr_code_data_extraction(np_image):
     detector = cv2.QRCodeDetector()
 
-    img = np.asarray(pil_image)
-
-    data, bbox, straight_qrcode = detector.detectAndDecode(img)
+    data, bbox, straight_qrcode = detector.detectAndDecode(np_image)
     if bbox is not None:
         total = data[(data.find('s=') + 2):(data.find('&fn'))]
         dateD = data[(data.find('t=') + 8):(data.find('T'))]
